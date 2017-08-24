@@ -7,6 +7,7 @@ import akka.{ NotUsed, Done }
 import akka.actor.ActorSystem
 import akka.util.ByteString
 import scala.concurrent._
+import SourceShape._
 import scala.concurrent.duration._
 import java.nio.file.Paths
 
@@ -62,7 +63,33 @@ class Printer extends Actor with ActorLogging {
   }
 }
 //#printer-actor
+//Worker actor
+object TestWorker{
+  def props(message:String,receiver:ActorRef): Props = Props(new TestWorker(message,receiver))
+}
+class TestWorker(message:String,receiver:ActorRef) extends Actor with ActorLogging{
+  import TestWorker._
+  receiver ! message
+  def receive: Receive = ???
+}
+//Testing supervisor
+object Test${
+  case class Message(from:String)
+  def props(receiver:ActorRef): Props = Props(new Test$(receiver))
+}
+class Test$(receiver:ActorRef) extends Actor with ActorLogging{
+  import Test$._
 
+  def receive = {
+    case Message(message)=>
+      log.info(s"the message $message was sent to be a worker")
+      val child = context.actorOf(TestWorker.props(message,receiver), name = "myChild")
+
+      //Creating a child
+
+  }
+
+}
 //#main-class
 object AkkaQuickstart extends App {
   import Greeter._
@@ -115,27 +142,36 @@ object AkkaQuickstart extends App {
         //The first part is a source that consumes from a kafka stream.
             //Input:A batch of sentences with user info(email(or uuid) and deck name (or uuid))
             //Output: Same as input
-    val QAGenConsumerSource: Source[String,NotUsed] = Source(1 to 60)
-      .map(_.toString)
-      .named("QAGen-ConsumerSource");
-    QAGenConsumerSource.runForeach(i=>println(i))(materializer)
-    //The second part sends the SBatchUserInfo to the actor system. It is a sink
-            //Input: A batch of sentences with user info(email(or uuid) and deck name (or uuid))
-            //Output: No output
-    val QAGenSenderSink: Sink[String,NotUsed] = Sink.foreach[String](println(_))
-    //The third part recieves the messages from the actor system. It is a source
-            //Input:No real input but it recieves messages from the QAActor system in the form: sentence, questions, answers, UserInfo:deckid, userid
-            //Output: sentence, questions, answers, UserInfo:deckid, userid, all as strings
 
-    val QAGenReceiverSource : Source[String,NotUsed] = Source.empty//runforeach( i=> println(i))(materializer)
-    //Combine all the stages in two stages;
-        //The first is putting the QAGenSenderSink and QAGenReceiverSource together
-    val QANestedStream :Flow[String,String,NotUsed] = Flow.fromSinkAndSource(QAGenSenderSink,QAGenReceiverSource)
-    //The second is combining them all into the QAGenStream Source
-    val QAGenStream : Source[String,NotUsed] = QAGenStream.via(QANestedStream)
-    //Testing sink to make QAGenStream runnable,
-    val QAGenStreamTest: RunnableGraph[NotUsed] = QAGenStream.to(Sink.foreach[String](println(_)))
-    //  QAGenStreamTest.run()
+          val QAConsumerSource: Source[String, NotUsed] = Source(1 to 60)
+            .map(_.toString)
+            .named("QAGen-ConsumerSource");
+          QAConsumerSource.runForeach(i => println(i))(materializer)
+          //The second part sends the SBatchUserInfo to the actor system. It is a sink
+          //Input: A batch of sentences with user info(email(or uuid) and deck name (or uuid))
+          //Output: No output
+          val QANestedSink: Sink[String, Future[Done]] = Sink.foreach[String](println(_))
+          //The third part recieves the messages from the actor system. It is a source
+          //Input:No real input but it recieves messages from the QAActor system in the form: sentence, questions, answers, UserInfo:deckid, userid
+          //Output: sentence, questions, answers, UserInfo:deckid, userid, all as strings
+
+          val QANestedSource: Source[String, NotUsed] = Source.empty
+
+          //runforeach( i=> println(i))(materializer)
+          //Combine all the stages in two stages;
+          //The first is putting the QAGenSenderSink and QAGenReceiverSource together
+          val QACompositeFlow: Flow[String, String, NotUsed] = Flow.fromSinkAndSource(QANestedSink, QANestedSource)
+          //The second is combining them all into the QAGenStream Source
+          val QAGenStream  = QAConsumerSource.via(QACompositeFlow)
+
+          //Testing sink to make QAGenStream runnable,
+          //val QAGenStreamTest: RunnableGraph[NotUsed] = QAGenStream.to(Sink.foreach[String](println(_)))
+          //  QAGenStreamTest.run()
+      //creating the supervisor with the QANestedSource as a ref
+          val test$ = system.actorOf(Test$.props(QANestedSource.), "test-supervisor")
+
+
+
 
   } finally {
     system.terminate()
