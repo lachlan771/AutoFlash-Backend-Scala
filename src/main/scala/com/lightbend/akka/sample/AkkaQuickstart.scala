@@ -1,18 +1,48 @@
 //#full-example
+
 package com.lightbend.akka.sample
+import org.reactivestreams.Publisher
+import akka.stream.OverflowStrategy.fail
+import akka.stream.scaladsl.Source
 import akka.stream._
 import akka.stream.scaladsl._
-import akka.actor.{ Actor, ActorLogging, ActorRef, ActorSystem, Props }
-import akka.{ NotUsed, Done }
+import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props}
+import akka.{Done, NotUsed}
 import akka.actor.ActorSystem
 import akka.util.ByteString
+
 import scala.concurrent._
 import SourceShape._
+
 import scala.concurrent.duration._
 import java.nio.file.Paths
 
+import akka.NotUsed
+import com.lightbend.akka.sample.ActorSystems.QAGen.model.BatchedSentence
+//Json format imports
+import com.lightbend.akka.sample.ActorSystems.QAGen.model.QAGenMessage
+import com.lightbend.akka.sample.ActorSystems.QAGen.QAJsonProtocols
+
+import scala.concurrent.duration._
+import akka.stream.scaladsl._
+import akka.stream._
+
+import scala.concurrent.{Await, ExecutionContext, Future}
+import akka.testkit.TestProbe
+import akka.actor.{ActorRef, ActorSystem}
+import com.typesafe.config.ConfigFactory
+import akka.actor.Actor
+import akka.actor.Props
+import akka.util.Timeout
+import java.util.concurrent.atomic.AtomicInteger
+
+import akka.stream.scaladsl.Flow
+import akka.Done
+import com.lightbend.akka.sample.ActorSystems.QAGen.QAGenChiefSupervisor
+import com.lightbend.akka.sample.ActorSystems.QAGen.model.Sentence
 //#greeter-companion
 //#greeter-messages
+/*
 object Greeter {
   //#greeter-messages
   def props(message: String, printerActor: ActorRef): Props = Props(new Greeter(message, printerActor))
@@ -90,92 +120,113 @@ class Test$(receiver:ActorRef) extends Actor with ActorLogging{
   }
 
 }
+*/
+//Function for prematerialized source
+
+//Akka Composite flow test
+class MyActor(dest:ActorRef) extends Actor {
+  val initMessage = "start"
+  val onCompleteMessage = "done"
+  val ackMessage = "ack"
+  def receive: Receive = {
+    case `initMessage`       =>  println("start")
+    case `onCompleteMessage` => println("done!")
+    case msg: Int            => dest ! msg
+  }
+}
+
+class ActorWithBackPressure(ref: ActorRef,dest:ActorRef) extends Actor {
+  val initMessage = "start"
+  val onCompleteMessage = "done"
+  val ackMessage = "ack"
+  def receive = {
+    case `initMessage`=>
+      sender() ! ackMessage
+      ref forward initMessage
+    case `onCompleteMessage` =>
+      ref forward onCompleteMessage
+    case msg: Int =>
+      sender() ! ackMessage
+      ref forward msg
+  }
+}
+
 //#main-class
 object AkkaQuickstart extends App {
-  import Greeter._
+  val initMessage = "start"
+  val onCompleteMessage = "done"
+  val ackMessage = "ack"
+  //import com.lightbend.akka.sample.ActorWithBackPressure
+  //import com.lightbend.akka.sample.MyActor
 
   // Create the 'helloAkka' actor system
-  implicit val system = ActorSystem("helloAkka")
+//  implicit val system = ActorSystem("helloAkka")
+//  implicit val materializer = ActorMaterializer()
+  implicit val system = ActorSystem("ActorWithBackPressure")
   implicit val materializer = ActorMaterializer()
+  //Function for the prematerialized queue ref
+  //T is the source type, here String
+  //M is the materialization type, here a SourceQueue[String]
+  //obtaining materialized value for actor ref while still being able to connect stream architecture in discrete stages
+  // From here https://bartekkalinka.github.io/2017/02/12/Akka-streams-source-run-it-publish-it-then-run-it-again.html
+  object RunWithHub {
+       def source[A, M](normal: Source[A, M])(implicit fm: Materializer, system: ActorSystem): (Source[A, NotUsed], M) = {
+          val (normalMat, hubSource) = normal.toMat(BroadcastHub.sink(bufferSize = 256))(Keep.both).run
+          (hubSource, normalMat)
+       }
+  }
+
+
+  //Testing Data
+  val testSentence1 = Sentence("Test Sentence 1")
+  val testSentence2 = Sentence("This is the second Test sentence")
+  val batchedSentenceTest= BatchedSentence(List(testSentence1,testSentence2))
+  val tests = QAGenMessage.toJson(testSentence1)
+  val testData = List(QAGenMessage.toJson(batchedSentenceTest))
+  //Creation of the QAGen Stream
+  //Begin creation from the smallest parts to the biggest
+  //1st is creating the components of the compositeflow
+      //The receiver of messages from the actor system is created 1st
+      val sourceTemp = Source.actorRef[String](1000, OverflowStrategy.fail)
+      val (qANestedSource, streamEntry: ActorRef) = RunWithHub.source(sourceTemp)
+      //The Main supervisor actor is created where it is given the destination of where to send the messages from the actor system
+      val actor = system.actorOf(QAGenChiefSupervisor.props(streamEntry))
+      //The sink is created that sends the messages to the actor system using a Actor with acknowledgment
+      val qANestedSink = Sink.actorRefWithAck(actor,initMessage,ackMessage,onCompleteMessage)
+      //The sink and source are then combined into qACompositeFlow
+      val qACompositeFlow: Flow[String,String, NotUsed] = Flow.fromSinkAndSource(qANestedSink, qANestedSource)
+  //2nd. A source is created that gets the messages from kafka
+      val qAKafkaSource: Source[String, NotUsed] = Source(testData)
+  //Finally the Source and composite flow are combined to create qAGenStream
+      val QAGenStream: Source[String,NotUsed] = qAKafkaSource.via(qACompositeFlow)
 
 
 
-  try {
-    //#create-actors
-    // Create the printer actor
-    // val printer: ActorRef = system.actorOf(Printer.props, "printerActor")
-
-    // // Create the 'greeter' actors
-    // val howdyGreeter: ActorRef =
-    //   system.actorOf(Greeter.props("Howdy", printer), "howdyGreeter")
-    // val helloGreeter: ActorRef =
-    //   system.actorOf(Greeter.props("Hello", printer), "helloGreeter")
-    // val goodDayGreeter: ActorRef =
-    //   system.actorOf(Greeter.props("Good day", printer), "goodDayGreeter")
-    // //#create-actors
-
-    // //#main-send-messages. ! is a tell
-    // howdyGreeter ! WhoToGreet("Akka")
-    // howdyGreeter ! Greet
-
-    // howdyGreeter ! WhoToGreet("Lightbend")
-    // howdyGreeter ! Greet
-
-    // helloGreeter ! WhoToGreet("Scala")
-    // helloGreeter ! Greet
-
-    // goodDayGreeter ! WhoToGreet("Play")
-    // goodDayGreeter ! Greet
-    // //#main-send-messages
-
-    // println(">>> Press ENTER to exit <<<")
-    // StdIn.readLine()\
-    //val source  = Source(1 to 60).map(_.toString)
-    //source.runForeach(i => println(i))(materializer)
-    // val QAGenConsumerSource: Source[String,NotUsed] = Source(1 to 60)
-    // .map(_.toString)
-    // .named("QAGen-ConsumerSource");
-    // QAGenConsumerSource.runForeach(i=>println(i))(materializer)
-
-    //First is the QASream which is a source getting information form kafka.In prototyping it gets it from a predefined source
-        //It is a Source made up of three parts
-        //The first part is a source that consumes from a kafka stream.
-            //Input:A batch of sentences with user info(email(or uuid) and deck name (or uuid))
-            //Output: Same as input
-
-          val QAConsumerSource: Source[String, NotUsed] = Source(1 to 60)
-            .map(_.toString)
-            .named("QAGen-ConsumerSource");
-          QAConsumerSource.runForeach(i => println(i))(materializer)
-          //The second part sends the SBatchUserInfo to the actor system. It is a sink
-          //Input: A batch of sentences with user info(email(or uuid) and deck name (or uuid))
-          //Output: No output
-          val QANestedSink: Sink[String, Future[Done]] = Sink.foreach[String](println(_))
-          //The third part recieves the messages from the actor system. It is a source
-          //Input:No real input but it recieves messages from the QAActor system in the form: sentence, questions, answers, UserInfo:deckid, userid
-          //Output: sentence, questions, answers, UserInfo:deckid, userid, all as strings
-
-          val QANestedSource: Source[String, NotUsed] = Source.empty
-
-          //runforeach( i=> println(i))(materializer)
-          //Combine all the stages in two stages;
-          //The first is putting the QAGenSenderSink and QAGenReceiverSource together
-          val QACompositeFlow: Flow[String, String, NotUsed] = Flow.fromSinkAndSource(QANestedSink, QANestedSource)
-          //The second is combining them all into the QAGenStream Source
-          val QAGenStream  = QAConsumerSource.via(QACompositeFlow)
-
-          //Testing sink to make QAGenStream runnable,
-          //val QAGenStreamTest: RunnableGraph[NotUsed] = QAGenStream.to(Sink.foreach[String](println(_)))
-          //  QAGenStreamTest.run()
-      //creating the supervisor with the QANestedSource as a ref
-          val test$ = system.actorOf(Test$.props(QANestedSource.), "test-supervisor")
+  //Creating a runnable graph and testing the Stream
+  val testRun: RunnableGraph[NotUsed] = QAGenStream.to(Sink.foreach[String](println(_)))
+  testRun.run()
 
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
   } finally {
     system.terminate()
-  }
+  }*/
 }
 //#main-class
 //#full-example

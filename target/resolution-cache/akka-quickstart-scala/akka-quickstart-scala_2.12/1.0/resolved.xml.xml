@@ -4,7 +4,7 @@
 		module="akka-quickstart-scala_2.12"
 		revision="1.0"
 		status="integration"
-		publication="20170824103439"
+		publication="20170828195223"
 	>
 		<description>
 		akka-quickstart-scala
@@ -39,5 +39,6 @@
 		<dependency org="com.typesafe.akka" name="akka-stream_2.12" rev="2.5.4" conf="compile->default(compile)"/>
 		<dependency org="com.typesafe.akka" name="akka-stream-testkit_2.12" rev="2.5.4" conf="test->default(compile)"/>
 		<dependency org="org.scalatest" name="scalatest_2.12" rev="3.0.1" conf="test->default(compile)"/>
+		<dependency org="com.typesafe.akka" name="akka-http-spray-json_2.12" rev="10.0.8" conf="compile->default(compile)"/>
 	</dependencies>
 </ivy-module>
